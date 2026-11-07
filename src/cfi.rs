@@ -45,6 +45,13 @@ fn entry_bounds(addr: usize, section_end: usize) -> Result<(usize, usize)> {
     Ok((body, end))
 }
 
+fn augmentation_data(r: &mut Reader) -> Result<Reader> {
+    let len = usize::try_from(r.uleb()?).map_err(|_| Failure::BadCieFde)?;
+    let pos = r.pos;
+    r.skip(len)?;
+    Ok(Reader { pos, end: r.pos })
+}
+
 /// Parse the CIE at `addr`, inside a section ending at `section_end`.
 pub fn parse_cie(addr: usize, section_end: usize, bases: &Bases) -> Result<Cie> {
     let (body, end) = entry_bounds(addr, section_end)?;
@@ -83,41 +90,26 @@ pub fn parse_cie(addr: usize, section_end: usize, bases: &Bases) -> Result<Cie> 
         instructions: 0,
         instructions_end: end,
     };
-    let mut letters = Reader::new(aug, aug_len);
-    let mut aug_end = 0usize;
-    let mut first = true;
-    while letters.pos < letters.end {
-        let c = letters.u8()?;
-        match c {
-            0x7a if first => {
-                // z: augmentation data length follows
-                cie.has_z = true;
-                let n = r.uleb()? as usize;
-                aug_end = r.pos.checked_add(n).ok_or(Failure::BadCieFde)?;
-                if aug_end > end {
-                    return Err(Failure::BadCieFde);
+    if aug_len != 0 {
+        let mut letters = Reader::new(aug, aug_len);
+        if letters.u8()? != b'z' {
+            return Err(Failure::UnknownAugmentation);
+        }
+        cie.has_z = true;
+        let mut data = augmentation_data(&mut r)?;
+        while letters.pos < letters.end {
+            match letters.u8()? {
+                b'P' => {
+                    let enc = data.u8()?;
+                    cie.personality = data.encoded(enc, bases)?;
                 }
+                b'L' => cie.lsda_encoding = data.u8()?,
+                b'R' => cie.fde_encoding = data.u8()?,
+                b'S' => cie.signal = true,
+                b'B' | b'G' => {} // PAC B-key, MTE tagged
+                _ => return Err(Failure::UnknownAugmentation),
             }
-            0x50 => {
-                // P: personality encoding and pointer
-                let enc = r.u8()?;
-                cie.personality = r.encoded(enc, bases)?;
-            }
-            0x4c => cie.lsda_encoding = r.u8()?, // L
-            0x52 => cie.fde_encoding = r.u8()?,  // R
-            0x53 => cie.signal = true,           // S
-            0x42 | 0x47 => {}                    // B (PAC B-key), G (MTE tagged)
-            _ => return Err(Failure::UnknownAugmentation),
         }
-        first = false;
-    }
-    if cie.has_z {
-        if r.pos > aug_end {
-            return Err(Failure::BadCieFde);
-        }
-        r.pos = aug_end;
-    } else if aug_len != 0 {
-        return Err(Failure::UnknownAugmentation);
     }
     cie.instructions = r.pos;
     Ok(cie)
@@ -145,26 +137,10 @@ pub fn parse_fde(addr: usize, section: usize, section_end: usize, bases: &Bases)
     let range = crate::mem::encoded_range(&mut r, cie.fde_encoding)?;
     let mut lsda = 0usize;
     if cie.has_z {
-        let n = r.uleb()? as usize;
-        let aug_end = r.pos.checked_add(n).ok_or(Failure::BadCieFde)?;
-        if aug_end > end {
-            return Err(Failure::BadCieFde);
-        }
+        let mut data = augmentation_data(&mut r)?;
         if cie.lsda_encoding != DW_EH_PE_OMIT {
-            let mut a = Reader { pos: r.pos, end: aug_end };
-            // A zero LSDA pointer (before relocation) means "none".
-            let probe = a;
-            lsda = a.encoded(cie.lsda_encoding, &Bases { func: start, ..*bases })?;
-            let raw_zero = match cie.lsda_encoding & 0x0f {
-                0x03 | 0x0b => (unsafe { load::<u32>(probe.pos) }) == 0,
-                0x04 | 0x0c | 0x00 => (unsafe { load::<u64>(probe.pos) }) == 0,
-                _ => false,
-            };
-            if raw_zero {
-                lsda = 0;
-            }
+            lsda = data.encoded_lsda(cie.lsda_encoding, &Bases { func: start, ..*bases })?;
         }
-        r.pos = aug_end;
     }
     Ok(Fde {
         start,
@@ -203,6 +179,33 @@ mod tests {
     use super::{parse_fde, scan};
     use crate::failure::Failure;
     use crate::mem::Bases;
+
+    #[test]
+    fn empty_personality_augmentation_cannot_decode_instruction_bytes() {
+        let mut bytes = [0u8; 25];
+        bytes[..4].copy_from_slice(&21u32.to_ne_bytes());
+        bytes[8..17].copy_from_slice(&[1, b'z', b'P', 0, 1, 0, 0, 0, 0x80]);
+        bytes[17..25].copy_from_slice(&1u64.to_ne_bytes());
+        let start = bytes.as_ptr() as usize;
+        assert!(matches!(
+            super::parse_cie(start, start + bytes.len(), &Bases::default()),
+            Err(Failure::BadCieFde)
+        ));
+    }
+
+    #[test]
+    fn uleb_rejects_overflow_and_accepts_full_width_value() {
+        let mut bytes = [0xffu8; 10];
+        bytes[9] = 1;
+        let start = bytes.as_ptr() as usize;
+        assert!(matches!(crate::mem::Reader::new(start, bytes.len()).uleb(), Ok(u64::MAX)));
+        bytes[9] = 2;
+        let start = bytes.as_ptr() as usize;
+        assert!(matches!(
+            crate::mem::Reader::new(start, bytes.len()).uleb(),
+            Err(Failure::BadCieFde)
+        ));
+    }
 
     #[test]
     fn fde_augmentation_must_fit_in_its_record() {

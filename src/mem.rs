@@ -72,10 +72,16 @@ impl Reader {
         let mut shift = 0u32;
         loop {
             let byte = self.u8()?;
+            let payload = u64::from(byte & 0x7f);
             if shift < 64 {
-                result |= u64::from(byte & 0x7f) << shift;
+                if payload > u64::MAX >> shift {
+                    return Err(Failure::BadCieFde);
+                }
+                result |= payload << shift;
+                shift = (shift + 7).min(64);
+            } else if payload != 0 {
+                return Err(Failure::BadCieFde);
             }
-            shift += 7;
             if byte & 0x80 == 0 {
                 return Ok(result);
             }
@@ -112,6 +118,14 @@ impl Reader {
     /// personality routine, is indirect | pcrel | sdata4: a 32-bit signed
     /// offset from the field to a GOT cell holding the routine address.
     pub fn encoded(&mut self, encoding: u8, bases: &Bases) -> Result<usize> {
+        self.decode_pointer(encoding, bases, false)
+    }
+
+    pub(crate) fn encoded_lsda(&mut self, encoding: u8, bases: &Bases) -> Result<usize> {
+        self.decode_pointer(encoding, bases, true)
+    }
+
+    fn decode_pointer(&mut self, encoding: u8, bases: &Bases, is_lsda: bool) -> Result<usize> {
         if encoding == DW_EH_PE_OMIT {
             return Err(Failure::BadPointerEncoding);
         }
@@ -119,12 +133,13 @@ impl Reader {
         // DW_EH_PE_aligned: the value is pointer aligned and absolute.
         if encoding & 0x70 == 0x50 {
             let size = core::mem::size_of::<usize>();
-            let aligned = (self.pos + size - 1) & !(size - 1);
+            let aligned = field.checked_add(size - 1).ok_or(Failure::BadPointerEncoding)?
+                & !(size - 1);
             self.pos = aligned;
-            let v = self.u64()? as usize;
-            return Ok(v);
+            return Ok(self.u64()? as usize);
         }
-        let raw: usize = match encoding & 0x0f {
+        let format = encoding & 0x0f;
+        let raw: usize = match format {
             0x00 => {
                 if core::mem::size_of::<usize>() == 8 {
                     self.u64()? as usize
@@ -150,6 +165,10 @@ impl Reader {
             0x40 if bases.func != 0 => bases.func,
             _ => return Err(Failure::BadPointerEncoding),
         };
+        // Check the fixed-width LSDA sentinel before applying the base or loading a slot.
+        if is_lsda && raw == 0 && matches!(format, 0x00 | 0x03 | 0x04 | 0x0b | 0x0c) {
+            return Ok(0);
+        }
         let mut value = base.wrapping_add(raw);
         if encoding & DW_EH_PE_INDIRECT != 0 {
             if value == 0 || value % core::mem::align_of::<usize>() != 0 {
