@@ -126,6 +126,9 @@ pub fn parse_cie(addr: usize, section_end: usize, bases: &Bases) -> Result<Cie> 
 /// Parse the FDE at `addr`. `section` is the start of the eh_frame section and
 /// `section_end` its end; the CIE is located through the CIE pointer.
 pub fn parse_fde(addr: usize, section: usize, section_end: usize, bases: &Bases) -> Result<Fde> {
+    if addr < section {
+        return Err(Failure::BadCieFde);
+    }
     let (body, end) = entry_bounds(addr, section_end)?;
     let mut r = Reader { pos: body, end };
     let id_field = r.pos;
@@ -144,6 +147,9 @@ pub fn parse_fde(addr: usize, section: usize, section_end: usize, bases: &Bases)
     if cie.has_z {
         let n = r.uleb()? as usize;
         let aug_end = r.pos.checked_add(n).ok_or(Failure::BadCieFde)?;
+        if aug_end > end {
+            return Err(Failure::BadCieFde);
+        }
         if cie.lsda_encoding != DW_EH_PE_OMIT {
             let mut a = Reader { pos: r.pos, end: aug_end };
             // A zero LSDA pointer (before relocation) means "none".
@@ -173,14 +179,14 @@ pub fn parse_fde(addr: usize, section: usize, section_end: usize, bases: &Bases)
 /// Linear search of a whole eh_frame section for the FDE covering `pc`. Used
 /// only for images that carry `__eh_frame` without an index.
 pub fn scan(section: usize, len: usize, pc: usize, bases: &Bases) -> Result<Option<Fde>> {
-    let end = section + len;
+    let end = section.checked_add(len).ok_or(Failure::BadCieFde)?;
     let mut at = section;
-    while at + 4 <= end {
+    while end - at >= 4 {
         let (body, entry_end) = entry_bounds(at, end)?;
         if body == entry_end || unsafe { load::<u32>(at) } == 0 {
             break; // zero terminator
         }
-        let id = unsafe { load::<u32>(body) };
+        let id = Reader { pos: body, end: entry_end }.u32()?;
         if id != 0 {
             let fde = parse_fde(at, section, end, bases)?;
             if fde.start <= pc && pc < fde.end {
@@ -190,6 +196,49 @@ pub fn scan(section: usize, len: usize, pc: usize, bases: &Bases) -> Result<Opti
         at = entry_end;
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_fde, scan};
+    use crate::failure::Failure;
+    use crate::mem::Bases;
+
+    #[test]
+    fn fde_augmentation_must_fit_in_its_record() {
+        let mut bytes = [0u8; 44];
+        // CIE at 0 with a "z" augmentation and no LSDA encoding.
+        bytes[..4].copy_from_slice(&11u32.to_ne_bytes());
+        bytes[8..15].copy_from_slice(&[1, b'z', 0, 1, 0, 0, 0]);
+        // FDE at 15, with its CIE delta measured from offset 19.
+        bytes[15..19].copy_from_slice(&21u32.to_ne_bytes());
+        bytes[19..23].copy_from_slice(&19u32.to_ne_bytes());
+        bytes[23..31].copy_from_slice(&0x1000u64.to_ne_bytes());
+        bytes[31..39].copy_from_slice(&0x20u64.to_ne_bytes());
+
+        let section = bytes.as_ptr() as usize;
+        let section_end = section + bytes.len();
+        assert!(parse_fde(section + 15, section, section_end, &Bases::default()).is_ok());
+
+        // The four bytes fit in the section but fall after the FDE.
+        bytes[39] = 4;
+        let section = bytes.as_ptr() as usize;
+        assert!(matches!(
+            parse_fde(section + 15, section, section + bytes.len(), &Bases::default()),
+            Err(Failure::BadCieFde)
+        ));
+    }
+
+    #[test]
+    fn scanner_id_must_fit_in_its_record() {
+        let mut bytes = [0u8; 8];
+        bytes[..4].copy_from_slice(&1u32.to_ne_bytes());
+        let section = bytes.as_ptr() as usize;
+        assert!(matches!(
+            scan(section, bytes.len(), 0, &Bases::default()),
+            Err(Failure::BadCieFde)
+        ));
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
