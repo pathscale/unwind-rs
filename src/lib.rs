@@ -1,4 +1,4 @@
-//! ps-unwind: a no_std stack unwinder that provides the `_Unwind_*` boundary
+//! unwind-rs: a no_std stack unwinder that provides the `_Unwind_*` boundary
 //! used by Rust panic_unwind and std::backtrace.
 //!
 //! The crate reads the platform tables (Apple compact unwind, DWARF CFI in
@@ -11,10 +11,10 @@
 #![allow(clippy::missing_safety_doc)]
 
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-compile_error!("ps-unwind supports aarch64 and x86_64 only");
+compile_error!("unwind-rs supports aarch64 and x86_64 only");
 
 #[cfg(not(any(target_vendor = "apple", target_os = "linux")))]
-compile_error!("ps-unwind supports Darwin and Linux only");
+compile_error!("unwind-rs supports Darwin and Linux only");
 
 pub mod abi;
 pub mod arch;
@@ -62,7 +62,7 @@ mod malloc {
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     // The unwinder never panics on purpose: every check returns a named
-    // Failure. A panic here is a bug in ps-unwind, and unwinding out of the
+    // Failure. A panic here is a bug in unwind-rs, and unwinding out of the
     // unwinder is not an option.
-    failure::fatal(b"ps-unwind: internal panic\n")
+    failure::fatal(b"unwind-rs: internal panic\n")
 }

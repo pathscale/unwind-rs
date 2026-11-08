@@ -340,6 +340,17 @@ pub unsafe extern "C" fn _Unwind_GetRegionStart(c: *mut Cursor) -> usize {
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn _Unwind_GetGR(c: *mut Cursor, index: c_int) -> usize {
+    match unsafe { (*c).regs.get(index as u16) } {
+        Ok(value) => value,
+        Err(_) => {
+            failure::report(Failure::UnknownRegister, index as usize);
+            failure::fatal(b"ps-unwind: _Unwind_GetGR on an unknown register\n");
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn _Unwind_SetGR(c: *mut Cursor, index: c_int, value: usize) {
     if unsafe { (*c).regs.set(index as u16, value) }.is_err() {
         failure::report(Failure::UnknownRegister, index as usize);

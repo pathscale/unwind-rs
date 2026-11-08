@@ -25,12 +25,12 @@
 // A reader failure prints the failure name in place of the number; a v2
 // personality result other than install prints reason-N.
 
-use ps_unwind::abi::{self, Cursor};
-use ps_unwind::arch::Regs;
-use ps_unwind::cfi;
-use ps_unwind::eko;
-use ps_unwind::frame::FrameInfo;
-use ps_unwind::mem::Bases;
+use unwind_rs::abi::{self, Cursor};
+use unwind_rs::arch::Regs;
+use unwind_rs::cfi;
+use unwind_rs::eko;
+use unwind_rs::frame::FrameInfo;
+use unwind_rs::mem::Bases;
 
 const SP: usize = 0x10_0000;
 

@@ -1,10 +1,10 @@
 [package]
-name = "ps-unwind"
+name = "unwind-rs"
 version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "Pathscale stack unwinder: a no_std _Unwind_* implementation in Rust"
-repository = "https://github.com/pathscale/ps-unwind"
+repository = "https://github.com/pathscale/unwind-rs"
 readme = "README.md"
 keywords = ["unwind", "no_std", "exceptions", "backtrace", "aarch64"]
 categories = ["no-std", "development-tools::debugging"]
@@ -13,7 +13,7 @@ categories = ["no-std", "development-tools::debugging"]
 exclude = ["transcripts/"]
 
 [lib]
-name = "ps_unwind"
+name = "unwind_rs"
 path = "src/lib.rs"
 crate-type = ["rlib"]
 

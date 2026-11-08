@@ -72,6 +72,7 @@ pub fn signal_enter() {
     SIGNAL.fetch_add(1, Ordering::SeqCst);
 }
 
+#[allow(deprecated)]
 pub fn signal_leave() {
     let _ = SIGNAL.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
 }
